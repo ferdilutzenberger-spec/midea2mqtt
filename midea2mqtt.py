@@ -11,7 +11,7 @@ _CONFIG_FILE = "/etc/opt/midea2mqtt/midea2mqtt.yml"
 logging.basicConfig(level=logging.INFO)
 _LOGGER = logging.getLogger(__name__)
 
-class midea2mqtt():
+class Midea2Mqtt():
 
     def __init__(self):
         self.online = False
@@ -24,12 +24,11 @@ class midea2mqtt():
                 valid = True
 
             except yaml.YAMLError as exception:
-                _LOGGER.info(f"unable to parse yaml from {configFile}")
+                _LOGGER.info(f"unable to parse yaml from {_CONFIG_FILE}")
                 _LOGGER.info(exception)
                 valid = False
 
-        # valid = self._parseConfigGeneral(data["general"]) if valid else False
-        valid = self._parseConfigMqtt(data["mqtt"]) if valid else False
+        valid = self._parseConfigGeneral(data["general"]) if valid else False
         valid = self._parseConfigAppliances(data["devices"]) if valid else False
         valid = self._connectMqtt() if valid else False
         valid = self._connectAppliances() if valid else False
@@ -49,10 +48,12 @@ class midea2mqtt():
         _LOGGER.info(f"main loop stopped")
 
     def _parseConfigGeneral(self, config):
-        valid = False
+        valid = True
 
-        self.generalPollrate = config["pollrate"] if "pollrate" in config else 60
-        self.generalLoglevel = config["loglevel"] if "loglevel" in config else ""
+        self.refreshDelay = config.get("pollrate", 60)
+        loglevel = config.get("loglevel", "INFO")
+        if loglevel:
+            logging.getLogger().setLevel(getattr(logging, loglevel.upper()))
 
         return valid
 
@@ -76,7 +77,7 @@ class midea2mqtt():
         self.appliances = dict()
         for config_entry in config:
             config_entry["topic"] = f"{self.mqttBasetopic}/{config_entry["topic"]}"
-            newAppliance = midea_appliance(
+            newAppliance = MideaAppliance(
                 config_entry["topic"], config_entry["address"],
                 config_entry["token"], config_entry["key"]
             )
@@ -112,7 +113,8 @@ class midea2mqtt():
         # mqtt_client.tls_set(tls_version=mqtt.client.ssl.PROTOCOL_TLS)
 
         # set username and password if given
-        # mqtt_client.username_pw_set(self.configMqtt["username"]}, self.configMqtt["password"]})
+        if self.mqttUsername:
+            self.mqtt_client.username_pw_set(self.mqttUsername, self.mqttPassword)
 
         self.online = self.mqtt_client.connect(self.mqttBroker, self.mqttPort) == 0
         return self.online
@@ -149,7 +151,7 @@ class midea2mqtt():
 
 
 
-class midea_appliance():
+class MideaAppliance():
 
     def __init__(self, topic, address, token, key):
         self.valid = False
@@ -168,18 +170,17 @@ class midea_appliance():
             self._appliance = appliance_state(
                 address = self.address, token = self.token, key = self.key,
             )
-            self._attribs = ["running", "fan_speed", "target_humidity", "ion_mode", "mode", 
-                "current_humidity", "current_temperature", "tank_level", "tank_full",
-                "model", "type", "name"]
-            _LOGGER.info(f"connected device {self.topic}")
+            _LOGGER.info(f"connected device {self.topic} of type {self._appliance.type}")
  
+
     def refresh(self):
         self._appliance.refresh()
 
         # prepare state as json (=> publish via mqtt)
         data = {}
-        for attribute in self._attribs:
-            data[attribute] = getattr(self._appliance.state, attribute)
+        for attr in dir(self._appliance.state):
+            if not attr.startswith('_') and hasattr(self._appliance.state, attr):
+                data[attr] = getattr(self._appliance.state, attr)
         payload = json.dumps(data)
         _LOGGER.debug(self._appliance)
 
@@ -194,11 +195,11 @@ class midea_appliance():
                 if self._appliance.state.needs_refresh:
                     self._appliance.apply()
 
-            except yaml.YAMLError as exception:
-                _LOGGER.error(f"parseSetMsg(): unable to parse yaml from {payload}")
+            except json.JSONDecodeError as exception:
+                _LOGGER.error(f"parseSetMsg(): unable to parse json from {payload}")
                 _LOGGER.debug(exception)
 
         return True
 
 # Start app
-mideaMqtt = midea2mqtt()
+mideaMqtt = Midea2Mqtt()
